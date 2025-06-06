@@ -9,6 +9,7 @@
 #include <ctime>
 #include <vector>
 
+#include "color.h"
 #include "vec3.h"
 
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
@@ -64,13 +65,7 @@ int main() {
   for (int j = 0; j < ny; ++j) {
     for (int i = 0; i < nx; ++i) {
       int pixel_index = (j * nx + i);
-      uint8_t ir = uint8_t(255.999 * fb[pixel_index].r());
-      uint8_t ig = uint8_t(255.999 * fb[pixel_index].g());
-      uint8_t ib = uint8_t(255.999 * fb[pixel_index].b());
-
-      imageBuffer.push_back(ir);
-      imageBuffer.push_back(ig);
-      imageBuffer.push_back(ib);
+      write_color(imageBuffer, fb[pixel_index]);
     }
   }
 
