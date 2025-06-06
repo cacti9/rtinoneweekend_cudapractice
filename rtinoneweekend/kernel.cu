@@ -9,6 +9,8 @@
 #include <ctime>
 #include <vector>
 
+#include "vec3.h"
+
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
 
@@ -22,14 +24,12 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
   }
 }
 
-__global__ void render(float *fb, int width, int height) {
+__global__ void render(vec3 *fb, int width, int height) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   int j = threadIdx.y + blockIdx.y * blockDim.y;
   if (i >= width || j >= height) return;
-  int pixel_index = (j * width + i) * 3;
-  fb[pixel_index + 0] = float(i) / width;
-  fb[pixel_index + 1] = float(j) / height;
-  fb[pixel_index + 2] = 0.2;
+  int pixel_index = (j * width + i);
+  fb[pixel_index] = vec3(float(i) / width, float(j) / height, 0.2f);
 }
 
 int main() {
@@ -43,10 +43,10 @@ int main() {
 
   int num_pixels = nx * ny;
   std::vector<uint8_t> imageBuffer; imageBuffer.reserve(num_pixels * 3);
-  size_t fb_size = 3 * num_pixels * sizeof(float);
+  size_t fb_size = num_pixels * sizeof(vec3);
 
   // allocate FB
-  float *fb;
+  vec3 *fb;
   checkCudaErrors(cudaMallocManaged((void **)&fb, fb_size));
 
   clock_t start, stop;
@@ -63,14 +63,10 @@ int main() {
 
   for (int j = 0; j < ny; ++j) {
     for (int i = 0; i < nx; ++i) {
-      int pixel_index = (j * nx + i) * 3;
-      auto r = fb[pixel_index + 0];
-      auto g = fb[pixel_index + 1];
-      auto b = fb[pixel_index + 2];
-
-      uint8_t ir = uint8_t(255.999 * r);
-      uint8_t ig = uint8_t(255.999 * g);
-      uint8_t ib = uint8_t(255.999 * b);
+      int pixel_index = (j * nx + i);
+      uint8_t ir = uint8_t(255.999 * fb[pixel_index].r());
+      uint8_t ig = uint8_t(255.999 * fb[pixel_index].g());
+      uint8_t ib = uint8_t(255.999 * fb[pixel_index].b());
 
       imageBuffer.push_back(ir);
       imageBuffer.push_back(ig);
