@@ -43,7 +43,8 @@ int main() {
 
   camera cam;
   cam.aspect_ratio = 16.f / 9.f;
-  cam.nx = 400;
+  cam.nx = 1400;
+  cam.samples_per_pixel = 100;
   cam.render(d_world);
 
   // clean up
