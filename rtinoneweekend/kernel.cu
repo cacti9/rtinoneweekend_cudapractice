@@ -9,43 +9,16 @@
 #include <ctime>
 #include <vector>
 
-#include "color.h"
-#include "ray.h"
-#include "vec3.h"
+#include "rtweekend.h"
+#include "hittable.h"
+#include "hittable_list.h"
+#include "sphere.h"
+#include <new>
 
-// limited version of checkCudaErrors from helper_cuda.h in CUDA examples
-#define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
-
-void check_cuda(cudaError_t result, char const *const func, const char *const file, int const line) {
-  if (result) {
-    std::cerr << "CUDA error = " << static_cast<unsigned int>(result) << " at " <<
-      file << ":" << line << " '" << func << "' \n";
-    // Make sure we call CUDA Device Reset before exiting
-    cudaDeviceReset();
-    exit(99);
-  }
-}
-
-__device__ float hit_sphere(const point3& center, float radius, const ray& r) {
-  vec3 oc = r.origin() - center;
-  auto a = dot(r.direction(), r.direction());
-  auto b = 2.0f * dot(r.direction(), oc);
-  auto c = dot(oc, oc) - radius * radius;
-  auto discriminant = b * b - 4.f * a * c;
-
-  if (discriminant < 0.f) {
-    return -1.f;
-  }
-  else {
-    return (-b - sqrtf(discriminant)) / (2.f * a);
-  }
-}
-
-__device__ color ray_color(const ray& r) {
-  auto t = hit_sphere(point3(0, 0, -1), 0.5f, r);
-  if (t > 0.0f) {
-    vec3 N = unit_vector(r.at(t) - vec3(0, 0, -1));
-    return 0.5f * color(N.x() + 1, N.y() + 1, N.z() + 1);
+__device__ color ray_color(const ray& r, hittable_list **world) {
+  hit_record rec;
+  if ((*world)->hit(r, { 0.f, infinity }, rec)) {
+    return 0.5f * (rec.normal + color(1.f, 1.f, 1.f));
   }
 
   vec3 unit_direction = unit_vector(r.direction());
@@ -53,7 +26,8 @@ __device__ color ray_color(const ray& r) {
   return (1.0f - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0);
 }
 
-__global__ void render(vec3 *fb, int width, int height, vec3 to_pixel00, vec3 viewport_u, vec3 viewport_v, vec3 camera_center) {
+__global__ void render(vec3 *fb, int width, int height, vec3 to_pixel00, vec3 viewport_u, vec3 viewport_v, vec3 camera_center,
+                       hittable_list **world) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   int j = threadIdx.y + blockIdx.y * blockDim.y;
   if (i >= width || j >= height) return;
@@ -62,10 +36,25 @@ __global__ void render(vec3 *fb, int width, int height, vec3 to_pixel00, vec3 vi
   //instead of pixel_delta, divide everytime for better accuracy
   auto ray_direction = to_pixel00 + (i * viewport_u)/width + (j * viewport_v)/height; 
   ray r(camera_center, ray_direction);
-  fb[pixel_index] = ray_color(r);
+  fb[pixel_index] = ray_color(r, world);
+}
+
+__global__ void create_world(hittable **d_list, hittable_list **d_world) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    *(d_list) = new sphere(vec3(0, 0, -1), 0.5);
+    *(d_list + 1) = new sphere(vec3(0, -100.5, -1), 100);
+    *d_world = new hittable_list(d_list, 2);
+  }
+}
+
+__global__ void free_world(hittable **d_list, hittable_list **d_world) {
+  delete *(d_list);
+  delete *(d_list + 1);
+  delete *d_world;
 }
 
 int main() {
+  auto a = sizeof(interval);
   // Image
   auto aspect_ratio = 16.0 / 9.0;
   int nx = 1200;
@@ -98,8 +87,8 @@ int main() {
   auto to_pixel00 = pixel00_loc - camera_center;
 
   // Render
-  std::cerr << "Rendering a " << nx << "x" << ny << " image ";
-  std::cerr << "in " << tx << "x" << ty << " blocks.\n";
+  std::cout << "Rendering a " << nx << "x" << ny << " image ";
+  std::cout << "in " << tx << "x" << ty << " blocks.\n";
 
   int num_pixels = nx * ny;
   std::vector<uint8_t> imageBuffer; imageBuffer.reserve(num_pixels * 3);
@@ -109,12 +98,21 @@ int main() {
   vec3 *fb;
   checkCudaErrors(cudaMallocManaged((void **)&fb, fb_size));
 
+  // make our world of hitables
+  hittable **d_list;
+  checkCudaErrors(cudaMalloc((void **)&d_list, 2 * sizeof(hittable *)));
+  hittable_list **d_world;
+  checkCudaErrors(cudaMalloc((void **)&d_world, sizeof(hittable_list *)));
+  create_world << <1, 1 >> > (d_list, d_world);
+  checkCudaErrors(cudaGetLastError());
+  checkCudaErrors(cudaDeviceSynchronize());
+
   clock_t start, stop;
   start = clock();
   // Render our buffer
   dim3 blocks(nx / tx + 1, ny / ty + 1);
   dim3 threads(tx, ty);
-  render << <blocks, threads >> > (fb, nx, ny, to_pixel00, viewport_u, viewport_v, camera_center);
+  render << <blocks, threads >> > (fb, nx, ny, to_pixel00, viewport_u, viewport_v, camera_center, d_world);
   checkCudaErrors(cudaGetLastError());
   checkCudaErrors(cudaDeviceSynchronize());
   stop = clock();
@@ -135,5 +133,14 @@ int main() {
     std::cout << "image out fail\n";
   }
 
-  checkCudaErrors(cudaFree(fb));
+    // clean up
+    checkCudaErrors(cudaDeviceSynchronize());
+    free_world<<<1,1>>>(d_list,d_world);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaFree(d_list));
+    checkCudaErrors(cudaFree(d_world));
+    checkCudaErrors(cudaFree(fb));
+
+    // useful for cuda-memcheck --leak-check full
+    cudaDeviceReset();
 }
